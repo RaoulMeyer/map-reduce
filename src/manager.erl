@@ -2,10 +2,11 @@
 -export([init/0]).
 -define(DELIMITER, <<"\r\n">>).
 
+
 %%% init %%%
 init() ->
     init(
-        fun(Key, Value) -> [{Word, 1} || Word <- binary:split(Value, [<<" ">>], [global])] end,
+        fun(Key, Value) -> [{Word, <<"1">>} || Word <- binary:split(Value, [<<" ">>], [global])] end,
         fun() -> ok end
     ).
 
@@ -33,17 +34,18 @@ save_array_to_files([First | Rest], Counter) ->
 
 %%% map %%%
 map(M, R, InputFilesCount) ->
-    Workers = spawn_workers(1),
+    Workers = spawn_workers(3),
+    timer:sleep(1000),
     map(M, R, 0, InputFilesCount, Workers).
 
 map(M, R, ProcessedFiles, TotalFiles, Workers) when ProcessedFiles == TotalFiles + 1 ->
-    timer:sleep(1000),
-    cleanup_workers(Workers),
+    timer:sleep(2000),
+%    cleanup_workers(Workers),
     sort(R, TotalFiles, Workers);
 map(M, R, ProcessedFiles, TotalFiles, Workers) ->
     receive
         {From, idle} ->
-            io:format("Idle worker detected, sending file number ~p~n", [ProcessedFiles]),
+            io:format("Idle worker detected, sending file number ~p to ~p~n", [ProcessedFiles, From]),
             From ! {self(), map, M, ProcessedFiles},
             UpdatedProcessedFiles = ProcessedFiles + 1;
         _ ->
@@ -61,7 +63,28 @@ cleanup_workers([]) -> ok;
 cleanup_workers([FirstWorker | Rest]) ->
     exit(FirstWorker, kill),
     cleanup_workers(Rest).
+flush() ->
+    receive
+        _ -> flush()
+    after
+        0 -> ok
+    end.
 
 %%% sort %%%
 sort(R, TotalFiles, Workers) ->
-    ok.
+    message_workers({self(), sort}, Workers),
+    timer:sleep(2000),
+    flush(),
+%    cleanup_workers(Workers),
+    timer:sleep(1000),
+    Workers.
+
+% sort(R, TotalFiles, Workers, )
+
+message_workers(_, []) -> ok;
+message_workers(Message, [FirstWorker | Rest]) ->
+    FirstWorker ! Message,
+    message_workers(Message, Rest).
+
+
+%%% partition %%%
