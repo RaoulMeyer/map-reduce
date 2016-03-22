@@ -7,7 +7,7 @@
 init() ->
     init(
         fun(Key, Value) -> [{Word, <<"1">>} || Word <- binary:split(Value, [<<" ">>], [global])] end,
-        fun() -> ok end
+        fun(Key, Values) -> {Key, list_to_binary(integer_to_list(lists:foldl(fun(X, Sum) -> list_to_integer(binary_to_list(X)) + Sum end, 0, Values)))} end
     ).
 
 init(M, R) ->
@@ -27,14 +27,16 @@ read_lines(FileName) ->
 
 save_array_to_files(Data) -> save_array_to_files(Data, 0).
 save_array_to_files([], Counter) -> Counter - 1;
-save_array_to_files([First | Rest], Counter) ->
+save_array_to_files([First | Rest], Counter) when First =/= <<"">> ->
     file:write_file("../generated/split" ++ integer_to_list(Counter) ++ ".txt", First),
-    save_array_to_files(Rest, Counter + 1).
+    io:format("Write ~p~n", [First]),
+    save_array_to_files(Rest, Counter + 1);
+save_array_to_files([First | Rest], Counter) -> save_array_to_files(Rest, Counter).
 
 
 %%% map %%%
 map(M, R, InputFilesCount) ->
-    Workers = spawn_workers(4),
+    Workers = spawn_workers(5),
     timer:sleep(1000),
     map(M, R, 0, InputFilesCount, Workers).
 
@@ -84,9 +86,8 @@ message_workers(Message, [FirstWorker | Rest]) ->
 partition(R, Workers, MinValues, MaxValues) ->
     Partitioning = build_partitioning(Workers, lists:min(MinValues), lists:max(MaxValues)),
     message_workers({self(), partition, Partitioning}, Workers),
-    timer:sleep(5000),
-    cleanup_workers(Workers),
-    flush().
+    timer:sleep(1000),
+    reduce(R, Workers).
 
 build_partitioning(Workers, Min, Max) ->
     build_partition_for_workers(Workers, length(Workers), Min, Max, 0).
@@ -102,6 +103,17 @@ build_partition_for_workers([FirstWorker | Rest], WorkerCount, Min, Max, Positio
 
 integer_to_two_letters(Integer) ->
     [trunc(Integer / 256), trunc(Integer) rem 256].
+
+%%% reduce %%%
+reduce(R, Workers) ->
+    message_workers({self(), reduce, R}, Workers),
+    timer:sleep(1000),
+    cleanup(Workers).
+
+cleanup(Workers) ->
+    cleanup_workers(Workers),
+    flush().
+
 
 cleanup_workers([]) -> ok;
 cleanup_workers([FirstWorker | Rest]) ->

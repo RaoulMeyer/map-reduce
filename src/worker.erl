@@ -32,8 +32,12 @@ loop(Manager, Id) ->
 loop(Manager, Id, Data) ->
     receive
         {From, partitiondata, ReceivedData} ->
-            NewData = Data ++ ReceivedData,
-            io:format("Data received in ~p, full data: ~p~n", [self(), NewData])
+            NewData = Data ++ ReceivedData;
+        {From, reduce, Reduce} ->
+            Combined = combine(sort_mapped_items(Data)),
+            Result = lists:map(fun({Key, Values}) -> Reduce(Key, Values) end, Combined),
+            save_reduced_result(Id, Result),
+            NewData = Data
     end,
     loop(Manager, Id, NewData).
 
@@ -82,3 +86,16 @@ send_partitioned_data([Partition | Rest], Items) ->
     Data = [{Key, Value} || {Key, Value} <- Items, From < binary_to_list(Key), binary_to_list(Key) < To],
     Target ! {self(), partitiondata, Data},
     send_partitioned_data(Rest, Items).
+
+combine(Data) ->
+    Keys = lists:usort([Key || {Key, _} <- Data]),
+    combine_by_key(Keys, Data).
+
+combine_by_key([], _) -> [];
+combine_by_key([Key | Rest], Data) ->
+    [{Key, [Value || {ItemKey, Value} <- Data, ItemKey == Key]}]
+        ++ combine_by_key(Rest, Data).
+
+save_reduced_result(Id, Result) ->
+    io:format("Reduced: ~p~n", [key_value_list_to_string(Result)]),
+    file:write_file("../generated/reduced" ++ integer_to_list(Id) ++ ".txt", key_value_list_to_string(Result)).
