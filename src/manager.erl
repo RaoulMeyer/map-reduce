@@ -1,6 +1,7 @@
 -module(manager).
 -export([init/0]).
 -define(DELIMITER, <<"\r\n">>).
+-define(WORKER_COUNT, 100).
 
 
 %%% init %%%
@@ -29,20 +30,17 @@ save_array_to_files(Data) -> save_array_to_files(Data, 0).
 save_array_to_files([], Counter) -> Counter - 1;
 save_array_to_files([First | Rest], Counter) when First =/= <<"">> ->
     file:write_file("../generated/split" ++ integer_to_list(Counter) ++ ".txt", First),
-    io:format("Write ~p~n", [First]),
     save_array_to_files(Rest, Counter + 1);
-save_array_to_files([First | Rest], Counter) -> save_array_to_files(Rest, Counter).
+save_array_to_files([First | Rest], Counter) ->
+    save_array_to_files(Rest, Counter).
 
 
 %%% map %%%
 map(M, R, InputFilesCount) ->
-    Workers = spawn_workers(5),
-    timer:sleep(1000),
+    Workers = spawn_workers(min(?WORKER_COUNT, InputFilesCount)),
     map(M, R, 0, InputFilesCount, Workers).
 
 map(M, R, ProcessedFiles, TotalFiles, Workers) when ProcessedFiles == TotalFiles + 1 ->
-    timer:sleep(1000),
-%    cleanup_workers(Workers),
     sort(R, TotalFiles, Workers);
 map(M, R, ProcessedFiles, TotalFiles, Workers) ->
     receive
@@ -107,13 +105,22 @@ integer_to_two_letters(Integer) ->
 %%% reduce %%%
 reduce(R, Workers) ->
     message_workers({self(), reduce, R}, Workers),
-    timer:sleep(1000),
-    cleanup(Workers).
+    merge(Workers, 0).
 
+%%% merge %%%
+merge(Workers, TotalReady) when length(Workers) == TotalReady -> cleanup(Workers);
+merge(Workers, TotalReady) ->
+    receive
+        {From, reducedone, FileNumber} ->
+            {ok, Data} = file:read_file("../generated/reduced" ++ integer_to_list(FileNumber) ++ ".txt"),
+            file:write_file("../output/output.txt", Data, [append])
+    end,
+    merge(Workers, TotalReady + 1).
+
+%%% cleanup %%%
 cleanup(Workers) ->
     cleanup_workers(Workers),
     flush().
-
 
 cleanup_workers([]) -> ok;
 cleanup_workers([FirstWorker | Rest]) ->

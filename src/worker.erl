@@ -5,9 +5,8 @@
 init(Manager) ->
     {A, B, C} = now(),
     random:seed(A, B, C),
-    Id = random:uniform(100000),
+    Id = random:uniform(1000000),
     io:format("Spawning new process: ~p~n", [self()]),
-    timer:sleep(2000),
     Manager ! {self(), idle},
     loop(Manager, Id).
 
@@ -15,7 +14,6 @@ loop(Manager, Id) ->
     receive
         {From, map, Map, File} ->
             map(Map, File, Id),
-            timer:sleep(1000),
             Manager ! {self(), idle},
             loop(Manager, Id);
         {From, sort} ->
@@ -37,6 +35,7 @@ loop(Manager, Id, Data) ->
             Combined = combine(sort_mapped_items(Data)),
             Result = lists:map(fun({Key, Values}) -> Reduce(Key, Values) end, Combined),
             save_reduced_result(Id, Result),
+            Manager ! {self(), reducedone, Id},
             NewData = Data
     end,
     loop(Manager, Id, NewData).
@@ -45,21 +44,17 @@ loop(Manager, Id, Data) ->
 map(Map, File, Id) ->
     {ok, Data} = file:read_file("../generated/split" ++ integer_to_list(File) ++ ".txt"),
     Result = Map(File, Data),
-    file:write_file("../generated/mapped" ++ integer_to_list(Id) ++ ".txt", key_value_list_to_string(Result), [append]),
-    io:format("Read data with id ~p during map: ~p~n", [Id, Result]).
+    file:write_file("../generated/mapped" ++ integer_to_list(Id) ++ ".txt", key_value_list_to_string(Result, ?DELIMITER), [append]).
 
-key_value_list_to_string([]) -> [];
-key_value_list_to_string([Item | Rest]) ->
+key_value_list_to_string([], _) -> [];
+key_value_list_to_string([Item | Rest], Delimiter) ->
     {Key, Value} = Item,
-    [Key] ++ binary_to_list(?DELIMITER) ++ [Value] ++ binary_to_list(?DELIMITER) ++ key_value_list_to_string(Rest).
+    [Key] ++ binary_to_list(Delimiter) ++ [Value] ++ binary_to_list(?DELIMITER) ++ key_value_list_to_string(Rest, Delimiter).
 
 
 sort(Id) ->
-    io:format("Id: ~p~n", [Id]),
-    timer:sleep(1000),
     Items = get_mapped_items(Id),
     SortedItems = sort_mapped_items(Items),
-    io:format("Sorted items: ~p~n", [SortedItems]),
     SortedItems.
 
 get_mapped_items(Id) ->
@@ -97,5 +92,4 @@ combine_by_key([Key | Rest], Data) ->
         ++ combine_by_key(Rest, Data).
 
 save_reduced_result(Id, Result) ->
-    io:format("Reduced: ~p~n", [key_value_list_to_string(Result)]),
-    file:write_file("../generated/reduced" ++ integer_to_list(Id) ++ ".txt", key_value_list_to_string(Result)).
+    file:write_file("../generated/reduced" ++ integer_to_list(Id) ++ ".txt", key_value_list_to_string(Result, <<" - ">>)).
