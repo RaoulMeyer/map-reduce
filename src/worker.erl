@@ -3,35 +3,33 @@
 -define(DELIMITER, <<"\r\n">>).
 
 init(Manager) ->
-    {A, B, C} = now(),
-    random:seed(A, B, C),
-    Id = random:uniform(1000000),
-    io:format("Spawning new process: ~p~n", [self()]),
+    Id = erlang:unique_integer(),
+    logger:log(io_lib:format("Spawning new process: ~p~n", [self()])),
     Manager ! {self(), idle},
     loop(Manager, Id).
 
 loop(Manager, Id) ->
     receive
-        {From, map, Map, File} ->
+        {Manager, map, Map, File} ->
             map(Map, File, Id),
             Manager ! {self(), idle},
             loop(Manager, Id);
-        {From, sort} ->
+        {Manager, sort} ->
             Sorted = sort(Id),
             {Min, _} = lists:nth(1, Sorted),
             {Max, _} = lists:last(Sorted),
             Manager ! {self(), sorted, Min, Max},
             loop(Manager, Id);
-        {From, partition, Partitioning} ->
+        {Manager, partition, Partitioning} ->
             send_partitioned_data(Partitioning, get_mapped_items(Id)),
             loop(Manager, Id, [])
     end.
 
 loop(Manager, Id, Data) ->
     receive
-        {From, partitiondata, ReceivedData} ->
+        {_, partitiondata, ReceivedData} ->
             NewData = Data ++ ReceivedData;
-        {From, reduce, Reduce} ->
+        {Manager, reduce, Reduce} ->
             Combined = combine(sort_mapped_items(Data)),
             Result = lists:map(fun({Key, Values}) -> Reduce(Key, Values) end, Combined),
             save_reduced_result(Id, Result),
