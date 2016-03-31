@@ -1,6 +1,6 @@
 -module(worker).
 -export([init/1]).
--define(DELIMITER, <<"\r\n">>).
+-define(DELIMITER, <<" \r\n">>).
 
 init(Manager) ->
     Id = erlang:unique_integer(),
@@ -14,14 +14,8 @@ loop(Manager, Id) ->
             map(Map, File, Id),
             Manager ! {self(), idle},
             loop(Manager, Id);
-        {Manager, sort} ->
-            Sorted = sort(Id),
-            {Min, _} = lists:nth(1, Sorted),
-            {Max, _} = lists:last(Sorted),
-            Manager ! {self(), sorted, Min, Max},
-            loop(Manager, Id);
-        {Manager, partition, Partitioning} ->
-            send_partitioned_data(Partitioning, get_mapped_items(Id)),
+        {Manager, partition, Partitioning, WorkerCount} ->
+            send_partitioned_data(Partitioning, WorkerCount, get_mapped_items(Id)),
             loop(Manager, Id, [])
     end.
 
@@ -30,7 +24,7 @@ loop(Manager, Id, Data) ->
         {_, partitiondata, ReceivedData} ->
             NewData = Data ++ ReceivedData;
         {Manager, reduce, Reduce} ->
-            Combined = combine(sort_mapped_items(Data)),
+            Combined = combine(Data),
             Result = lists:map(fun({Key, Values}) -> Reduce(Key, Values) end, Combined),
             save_reduced_result(Id, Result),
             Manager ! {self(), reducedone, Id},
@@ -50,11 +44,6 @@ key_value_list_to_string([Item | Rest], Delimiter) ->
     [Key] ++ binary_to_list(Delimiter) ++ [Value] ++ binary_to_list(?DELIMITER) ++ key_value_list_to_string(Rest, Delimiter).
 
 
-sort(Id) ->
-    Items = get_mapped_items(Id),
-    SortedItems = sort_mapped_items(Items),
-    SortedItems.
-
 get_mapped_items(Id) ->
     {ok, Data} = file:read_file("../generated/mapped" ++ integer_to_list(Id) ++ ".txt"),
     to_key_value_list(
@@ -66,21 +55,15 @@ to_key_value_list([<<>>]) -> [];
 to_key_value_list([Key, Value | Rest]) ->
     [{Key, Value}] ++ to_key_value_list(Rest).
 
-sort_mapped_items([]) -> [];
-sort_mapped_items([Pivot | Rest]) ->
-    {PivotKey, _} = Pivot,
-    sort_mapped_items([{ItemKey, ItemValue} || {ItemKey, ItemValue} <- Rest, ItemKey =< PivotKey])
-	++ [Pivot] ++
-    sort_mapped_items([{ItemKey, ItemValue} || {ItemKey, ItemValue} <- Rest, ItemKey > PivotKey]).
-
-send_partitioned_data([], _) -> [];
-send_partitioned_data([Partition | Rest], Items) ->
-    {Target, From, To} = Partition,
-    Data = [{Key, Value} || {Key, Value} <- Items, From < binary_to_list(Key), binary_to_list(Key) < To],
+send_partitioned_data([], _, _) -> [];
+send_partitioned_data([Partition | Rest], WorkerCount, Items) ->
+    {Target, HashValue} = Partition,
+    Data = [{Key, Value} || {Key, Value} <- Items, erlang:phash2(Key, WorkerCount) == HashValue],
     Target ! {self(), partitiondata, Data},
-    send_partitioned_data(Rest, Items).
+    send_partitioned_data(Rest, WorkerCount, Items).
 
 combine(Data) ->
+    logger:log(io_lib:format("Combining data ~p", [length(Data)])),
     Keys = lists:usort([Key || {Key, _} <- Data]),
     combine_by_key(Keys, Data).
 

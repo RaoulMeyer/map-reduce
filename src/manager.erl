@@ -1,7 +1,8 @@
 -module(manager).
 -export([init/0]).
 -define(DELIMITER, <<"\r\n">>).
--define(WORKER_COUNT, 10).
+-define(WORKER_COUNT, 200).
+-define(CHUNK_SIZE, 128000).
 
 
 %%% init %%%
@@ -19,29 +20,26 @@ init(M, R) ->
 
 %%% split %%%
 split(M, R) ->
+    Filename = "../input/input.txt",
     logger:log("Splitting input into blocks"),
-    InputFilesCount = save_array_to_files(
-        filter_empty_lines(
-            read_lines("../input/27603.male.24.Advertising.Sagittarius.xml")
-        )
-    ),
+    {ok, InputDevice} = file:open(Filename, [read]),
+    InputFilesCount = write_chunk_to_file(InputDevice, -1, ?CHUNK_SIZE + 1),
     logger:log(io_lib:format("Input was split into ~p separate blocks", [InputFilesCount])),
     map(M, R, InputFilesCount).
 
-read_lines(FileName) ->
-    {ok, Data} = file:read_file(FileName),
-    binary:split(Data, [?DELIMITER], [global]).
-
-filter_empty_lines(Lines) ->
-    lists:filter(fun(X) -> string:strip(binary_to_list(X)) =/= "" end, Lines).
-
-save_array_to_files(Data) -> save_array_to_files(Data, 0).
-save_array_to_files([], Counter) -> Counter - 1;
-save_array_to_files([First | Rest], Counter) when First =/= <<"">> ->
-    file:write_file("../generated/split" ++ integer_to_list(Counter) ++ ".txt", First),
-    save_array_to_files(Rest, Counter + 1);
-save_array_to_files([_ | Rest], Counter) ->
-    save_array_to_files(Rest, Counter).
+write_chunk_to_file(InputDevice, FileNumber, ContentLength) when ContentLength > ?CHUNK_SIZE ->
+    file:write_file("../generated/split" ++ integer_to_list(FileNumber + 1) ++ ".txt", ""),
+    logger:log(io_lib:format("Splitting chunk ~p", [FileNumber + 1])),
+    write_chunk_to_file(InputDevice, FileNumber + 1, 0);
+write_chunk_to_file(InputDevice, FileNumber, ContentLength) ->
+    case file:read(InputDevice, 10000) of
+            eof  ->
+                file:close(InputDevice),
+                FileNumber + 1;
+            {ok, Line} ->
+                file:write_file("../generated/split" ++ integer_to_list(FileNumber) ++ ".txt", Line, [append]),
+                write_chunk_to_file(InputDevice, FileNumber, ContentLength + length(Line))
+        end.
 
 
 %%% map %%%
@@ -50,9 +48,9 @@ map(M, R, InputFilesCount) ->
     logger:log(io_lib:format("Spawned ~p workers, starting map phase", [length(Workers)])),
     map(M, R, 0, InputFilesCount, Workers).
 
-map(_, R, ProcessedFiles, TotalFiles, Workers) when ProcessedFiles == TotalFiles + 1 ->
+map(_, R, ProcessedFiles, TotalFiles, Workers) when ProcessedFiles == TotalFiles ->
     logger:log("Map phase done, starting partitioning"),
-    sort(R, Workers);
+    partition(R, Workers);
 map(M, R, ProcessedFiles, TotalFiles, Workers) ->
     receive
         {From, idle} ->
@@ -70,21 +68,6 @@ spawn_workers(Count) ->
     AllWorkerPids = [WorkerPid] ++ spawn_workers(Count - 1),
     AllWorkerPids.
 
-%%% sort %%%
-sort(R, Workers) ->
-    message_workers({self(), sort}, Workers),
-    sort(R, Workers, 0, [], []).
-
-sort(R, Workers, TotalSorted, MinValues, MaxValues) when length(Workers) == TotalSorted ->
-    partition(R, Workers, MinValues, MaxValues);
-sort(R, Workers, TotalSorted, MinValues, MaxValues) ->
-    receive
-        {_, sorted, Min, Max} ->
-            NewMinValues = MinValues ++ [Min],
-            NewMaxValues = MaxValues ++ [Max]
-    end,
-    sort(R, Workers, TotalSorted + 1, NewMinValues, NewMaxValues).
-
 message_workers(_, []) -> ok;
 message_workers(Message, [FirstWorker | Rest]) ->
     FirstWorker ! Message,
@@ -92,32 +75,26 @@ message_workers(Message, [FirstWorker | Rest]) ->
 
 
 %%% partition %%%
-partition(R, Workers, MinValues, MaxValues) ->
-    Partitioning = build_partitioning(Workers, lists:min(MinValues), lists:max(MaxValues)),
-    message_workers({self(), partition, Partitioning}, Workers),
+partition(R, Workers) ->
+    Partitioning = build_partitioning(Workers),
+    message_workers({self(), partition, Partitioning, length(Workers)}, Workers),
     logger:log("Partitioning sent, workers are sending data to target workers"),
-    timer:sleep(1000),
+    timer:sleep(2000),
     reduce(R, Workers).
 
-build_partitioning(Workers, Min, Max) ->
-    build_partition_for_workers(Workers, length(Workers), Min, Max, 0).
+build_partitioning(Workers) ->
+    build_partition_for_workers(Workers, 0).
 
-build_partition_for_workers([], _, _, _, _) -> [];
-build_partition_for_workers([FirstWorker | Rest], WorkerCount, Min, Max, Position) ->
-    SmallestLetter = lists:nth(1, binary_to_list(Min)) * 256 - 1,
-    LargestLetter = lists:nth(1, binary_to_list(Max)) * 256 + 1,
-    StartingLetters = SmallestLetter + (LargestLetter - SmallestLetter) / WorkerCount * Position,
-    EndingLetters = SmallestLetter + (LargestLetter - SmallestLetter) / WorkerCount * (Position + 1),
-    [{FirstWorker, integer_to_two_letters(StartingLetters), integer_to_two_letters(EndingLetters)}]
-        ++ build_partition_for_workers(Rest, WorkerCount, Min, Max, Position + 1).
-
-integer_to_two_letters(Integer) ->
-    [trunc(Integer / 256), trunc(Integer) rem 256].
+build_partition_for_workers([], _) -> [];
+build_partition_for_workers([FirstWorker | Rest], Position) ->
+    [{FirstWorker, Position}]
+        ++ build_partition_for_workers(Rest, Position + 1).
 
 %%% reduce %%%
 reduce(R, Workers) ->
     logger:log("Starting reduce phase, waiting for all reducers to be done"),
     message_workers({self(), reduce, R}, Workers),
+    file:write_file("../output/output.txt", ""),
     merge(Workers, 0).
 
 %%% merge %%%
@@ -125,10 +102,25 @@ merge(Workers, TotalReady) when length(Workers) == TotalReady -> cleanup(Workers
 merge(Workers, TotalReady) ->
     receive
         {_, reducedone, FileNumber} ->
-            {ok, Data} = file:read_file("../generated/reduced" ++ integer_to_list(FileNumber) ++ ".txt"),
-            file:write_file("../output/output.txt", Data, [append])
+            logger:log(io_lib:format("Filenumber ~p ready with reduce, merging", [FileNumber])),
+            append_file_to_output("../generated/reduced" ++ integer_to_list(FileNumber) ++ ".txt", "../output/output.txt")
     end,
     merge(Workers, TotalReady + 1).
+
+append_file_to_output(InputPath, OutputPath) ->
+    {ok, InputDevice} = file:open(InputPath, [read]),
+    read_file_and_append(InputDevice, OutputPath),
+    file:close(InputDevice).
+
+read_file_and_append(Input, OutputPath) ->
+    case file:read(Input, ?CHUNK_SIZE) of
+        {ok, Data} ->
+            file:write_file(OutputPath, Data, [append]),
+            read_file_and_append(Input, OutputPath);
+        _ ->
+            ok
+    end.
+
 
 %%% cleanup %%%
 cleanup(Workers) ->
